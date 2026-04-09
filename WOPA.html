@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Генератор Sing-box Конфигов</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f7f6; color: #333; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; padding: 20px; box-sizing: border-box; }
+        .container { background: #fff; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); max-width: 600px; width: 100%; }
+        h1 { margin-top: 0; color: #2c3e50; font-size: 24px; text-align: center; }
+        p { color: #7f8c8d; text-align: center; margin-bottom: 25px; }
+        input[type="text"] { width: 100%; padding: 12px; margin-bottom: 15px; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; font-family: monospace; }
+        button { width: 100%; padding: 12px; background-color: #3498db; color: white; border: none; border-radius: 6px; font-size: 16px; cursor: pointer; transition: background-color 0.3s; }
+        button:hover { background-color: #2980b9; }
+        button:disabled { background-color: #95a5a6; cursor: not-allowed; }
+        .result { margin-top: 20px; padding: 15px; background-color: #e8f8f5; border-left: 4px solid #1abc9c; border-radius: 4px; display: none; }
+        .error { margin-top: 20px; padding: 15px; background-color: #fdedec; border-left: 4px solid #e74c3c; border-radius: 4px; color: #c0392b; display: none; font-size: 14px; }
+        .credentials { font-family: monospace; font-size: 16px; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>VLESS → Stealth Sing-box</h1>
+    <p>Вставьте ссылку <b>vless://</b>, ссылку на <b>подписку</b>, или <b>скопированный текст подписки</b></p>
+
+    <input type="text" id="vlessLink" placeholder="vless://... или http://... или Base64 текст" autocomplete="off">
+    <button id="genBtn" onclick="processLink()">Сгенерировать и Скачать</button>
+
+    <div id="resultBlock" class="result">
+        <b>✅ Конфиг успешно создан и скачан!</b><br><br>
+        Логин: <span class="credentials" id="outUser"></span><br>
+        Пароль: <span class="credentials" id="outPass"></span><br><br>
+        <i>💡 Режим: Строгая маршрутизация по правилам (Rule-only).</i>
+    </div>
+
+    <div id="errorBlock" class="error"></div>
+</div>
+
+<script>
+    function getRandomString(length, useSpecial = false) {
+        const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+        let result = '';
+        for (let i = 0; i < length; i++) { result += chars.charAt(Math.floor(Math.random() * chars.length)); }
+        return useSpecial ? result + '!' : result;
+    }
+
+    function generateCredentials() {
+        return { username: "user_" + getRandomString(8), password: getRandomString(14, true) };
+    }
+
+    function parseVless(uri) {
+        uri = uri.trim().replace(/^['"]|['"]$/g, '');
+        if (!uri.startsWith("vless://")) throw new Error("Итоговая ссылка не начинается с vless://");
+
+        try {
+            const url = new URL(uri);
+            const tag = url.hash ? decodeURIComponent(url.hash.substring(1)) : "Vless-Proxy";
+            return {
+                uuid: url.username, server: url.hostname, server_port: parseInt(url.port),
+                flow: url.searchParams.get("flow") || "", security: url.searchParams.get("security") || "none",
+                sni: url.searchParams.get("sni") || url.hostname, pbk: url.searchParams.get("pbk") || "",
+                sid: url.searchParams.get("sid") || "", fp: url.searchParams.get("fp") || "chrome", tag: tag
+            };
+        } catch (e) {
+            throw new Error("Не удалось разобрать ссылку VLESS. Проверьте формат.");
+        }
+    }
+
+    function cleanObject(obj) {
+        if (Array.isArray(obj)) {
+            return obj.map(cleanObject).filter(val => val !== null && val !== undefined && val !== "");
+        } else if (typeof obj === 'object' && obj !== null) {
+            return Object.entries(obj).reduce((acc, [key, val]) => {
+                const cleanedVal = cleanObject(val);
+                if (cleanedVal !== null && cleanedVal !== undefined && cleanedVal !== "" && 
+                   !(typeof cleanedVal === 'object' && Object.keys(cleanedVal).length === 0)) {
+                    acc[key] = cleanedVal;
+                }
+                return acc;
+            }, {});
+        }
+        return obj;
+    }
+
+    function generateConfig(v, username, password) {
+        const config = {
+            "log": { "level": "warn" },
+            "experimental": { "cache_file": { "enabled": false } },
+            "dns": {
+                "servers": [
+                    { "tag": "dns-remote", "type": "tls", "server": "8.8.8.8", "detour": v.tag },
+                    { "tag": "dns-direct", "type": "udp", "server": "1.1.1.1" }
+                ],
+                "rules": [
+                    { "domain_suffix": [".ru", ".su", ".рф"], "server": "dns-direct" },
+                    { "rule_set": ["geoip-ru"], "server": "dns-direct" }
+                ],
+                "final": "dns-remote",
+                "strategy": "ipv4_only"
+            },
+            "inbounds": [
+                {
+                    "type": "tun", "tag": "tun-in", "mtu": 1500,
+                    "address": ["10.25.36.1/28", "fdfe:dcba:9876::1/126"],
+                    "stack": "mixed", "auto_route": true, "strict_route": true
+                },
+                {
+                    "type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": 2080,
+                    "users": [{ "username": username, "password": password }]
+                }
+            ],
+            "outbounds": [
+                {
+                    "type": "vless", "tag": v.tag, "server": v.server, "server_port": v.server_port,
+                    "uuid": v.uuid, "flow": v.flow,
+                    "tls": v.security !== "none" ? {
+                        "enabled": true, "server_name": v.sni,
+                        "utls": { "enabled": true, "fingerprint": v.fp },
+                        "reality": v.security === "reality" ? {
+                            "enabled": true, "public_key": v.pbk, "short_id": v.sid
+                        } : null
+                    } : null
+                },
+                { "type": "direct", "tag": "direct" },
+                { "type": "block", "tag": "block" }
+            ],
+            "route": {
+                "default_domain_resolver": "dns-direct",
+                "rules": [
+                    { "action": "sniff" }, { "protocol": "dns", "action": "hijack-dns" },
+                    { "port": 53, "action": "hijack-dns" }, { "ip_cidr": ["10.25.36.2", "fdfe:dcba:9876::2"], "action": "hijack-dns" },
+                    { "network": "icmp", "outbound": "direct" }, { "domain_suffix": [".ru", ".su", ".рф"], "outbound": "direct" },
+                    { "rule_set": ["geoip-ru"], "outbound": "direct" }
+                ],
+                "rule_set": [
+                    {
+                        "type": "remote", "tag": "geoip-ru", "format": "binary",
+                        "url": "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-ru.srs",
+                        "download_detour": "direct"
+                    }
+                ],
+                "final": v.tag, "auto_detect_interface": true
+            }
+        };
+        return cleanObject(config);
+    }
+
+    async function processLink() {
+        const linkInput = document.getElementById('vlessLink').value.trim();
+        const resultBlock = document.getElementById('resultBlock');
+        const errorBlock = document.getElementById('errorBlock');
+        const btn = document.getElementById('genBtn');
+        
+        resultBlock.style.display = 'none';
+        errorBlock.style.display = 'none';
+
+        if (!linkInput) {
+            showError("Пожалуйста, вставьте ссылку или текст.");
+            return;
+        }
+
+        try {
+            btn.disabled = true;
+            let vlessUri = linkInput;
+
+            // Если вставили HTTP-ссылку (подписку)
+            if (linkInput.startsWith("http")) {
+                btn.innerText = "Скачивание подписки...";
+                // Используем другой прокси-сервис
+                const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(linkInput)}`;
+                
+                let textData = "";
+                try {
+                    const response = await fetch(proxyUrl);
+                    if (!response.ok) throw new Error();
+                    textData = await response.text();
+                } catch (netErr) {
+                    throw new Error("Браузер заблокировал скачивание подписки (включен блокировщик рекламы или прокси недоступен). <br><br><b>Решение:</b> Откройте вашу ссылку подписки в браузере, скопируйте появившийся текст и вставьте его сюда вместо ссылки!");
+                }
+
+                vlessUri = extractVlessFromText(textData);
+            } 
+            // Если вставили не vless-ссылку и не http, пробуем расшифровать как сырой текст подписки
+            else if (!linkInput.startsWith("vless://")) {
+                btn.innerText = "Расшифровка текста...";
+                vlessUri = extractVlessFromText(linkInput);
+            }
+
+            // Стандартный процесс генерации
+            btn.innerText = "Генерация конфига...";
+            const vlessData = parseVless(vlessUri);
+            const creds = generateCredentials();
+            const config = generateConfig(vlessData, creds.username, creds.password);
+
+            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(config, null, 2));
+            const safeTag = vlessData.tag.replace(/[^a-zA-Z0-9\-_]/g, '');
+            const fileName = `singbox_${safeTag || 'config'}.json`;
+
+            const dlAnchorElem = document.createElement('a');
+            dlAnchorElem.setAttribute("href", dataStr);
+            dlAnchorElem.setAttribute("download", fileName);
+            dlAnchorElem.click();
+
+            document.getElementById('outUser').innerText = creds.username;
+            document.getElementById('outPass').innerText = creds.password;
+            resultBlock.style.display = 'block';
+
+        } catch (e) {
+            showError(e.message);
+            console.error(e);
+        } finally {
+            btn.disabled = false;
+            btn.innerText = "Сгенерировать и Скачать";
+        }
+    }
+
+    // Вспомогательная функция для поиска vless внутри зашифрованного текста
+    function extractVlessFromText(rawText) {
+        let decodedData = "";
+        try {
+            decodedData = atob(rawText.trim()); // Пробуем расшифровать Base64
+        } catch (e) {
+            decodedData = rawText; // Если не Base64, берем как есть
+        }
+
+        const lines = decodedData.split('\n');
+        const vlessLink = lines.find(line => line.trim().startsWith("vless://"));
+        
+        if (!vlessLink) {
+            throw new Error("В полученных данных не найдено серверов vless://. Убедитесь, что подписка верная.");
+        }
+        return vlessLink.trim();
+    }
+
+    function showError(msg) {
+        const errorBlock = document.getElementById('errorBlock');
+        errorBlock.innerHTML = "❌ " + msg;
+        errorBlock.style.display = 'block';
+    }
+</script>
+
+</body>
+</html>
