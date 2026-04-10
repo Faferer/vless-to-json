@@ -10,6 +10,12 @@
         h1 { margin-top: 0; color: #2c3e50; font-size: 24px; text-align: center; }
         p { color: #7f8c8d; text-align: center; margin-bottom: 25px; }
         input[type="text"] { width: 100%; padding: 12px; margin-bottom: 15px; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; font-family: monospace; }
+        
+        .radio-group { display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; background: #f8f9fa; padding: 15px; border-radius: 6px; border: 1px solid #e9ecef; }
+        .radio-title { font-weight: bold; font-size: 14px; margin-bottom: 5px; color: #2c3e50; }
+        .radio-group label { cursor: pointer; font-size: 15px; display: flex; align-items: center; gap: 8px; color: #34495e; }
+        .radio-group input[type="radio"] { cursor: pointer; width: 18px; height: 18px; accent-color: #3498db; }
+
         button { width: 100%; padding: 12px; background-color: #3498db; color: white; border: none; border-radius: 6px; font-size: 16px; cursor: pointer; transition: background-color 0.3s; }
         button:hover { background-color: #2980b9; }
         button:disabled { background-color: #95a5a6; cursor: not-allowed; }
@@ -22,9 +28,22 @@
 
 <div class="container">
     <h1>VLESS → Stealth Sing-box</h1>
-    <p>Вставьте ссылку <b>vless://</b>, ссылку на <b>подписку</b>, или <b>скопированный текст подписки</b></p>
+    <p>Вставьте ссылку <b>vless://</b>, ссылку на <b>подписку</b>, или <b>текст подписки</b></p>
 
     <input type="text" id="vlessLink" placeholder="vless://... или http://... или Base64 текст" autocomplete="off">
+    
+    <div class="radio-group">
+        <div class="radio-title">Выберите устройство (версию ядра):</div>
+        <label>
+            <input type="radio" name="coreVersion" value="new" checked> 
+            Android / Windows / Linux (Ядро 1.14.0+)
+        </label>
+        <label>
+            <input type="radio" name="coreVersion" value="old"> 
+            iOS (Apple) / Старые клиенты (Ядро 1.11.x)
+        </label>
+    </div>
+
     <button id="genBtn" onclick="processLink()">Сгенерировать и Скачать</button>
 
     <div id="resultBlock" class="result">
@@ -46,7 +65,7 @@
     }
 
     function generateCredentials() {
-        return { username: "user_" + getRandomString(8), password: getRandomString(14, true) };
+        return { username: "user_" + getRandomString(10), password: getRandomString(24, true) };
     }
 
     function parseVless(uri) {
@@ -83,15 +102,20 @@
         return obj;
     }
 
-    function generateConfig(v, username, password) {
+    function generateConfig(v, username, password, isLegacyCore) {
+        const dnsServers = isLegacyCore ? [
+            { "tag": "dns-remote", "address": "tls://8.8.8.8", "detour": v.tag },
+            { "tag": "dns-direct", "address": "1.1.1.1" }
+        ] : [
+            { "tag": "dns-remote", "type": "tls", "server": "8.8.8.8", "detour": v.tag },
+            { "tag": "dns-direct", "type": "udp", "server": "1.1.1.1" }
+        ];
+
         const config = {
             "log": { "level": "warn" },
             "experimental": { "cache_file": { "enabled": false } },
             "dns": {
-                "servers": [
-                    { "tag": "dns-remote", "type": "tls", "server": "8.8.8.8", "detour": v.tag },
-                    { "tag": "dns-direct", "type": "udp", "server": "1.1.1.1" }
-                ],
+                "servers": dnsServers,
                 "rules": [
                     { "domain_suffix": [".ru", ".su", ".рф"], "server": "dns-direct" },
                     { "rule_set": ["geoip-ru"], "server": "dns-direct" }
@@ -122,11 +146,10 @@
                         } : null
                     } : null
                 },
-                { "type": "direct", "tag": "direct" },
-                { "type": "block", "tag": "block" }
+                { "type": "direct", "tag": "direct" }
             ],
             "route": {
-                "default_domain_resolver": "dns-direct",
+                "default_domain_resolver": isLegacyCore ? undefined : "dns-direct",
                 "rules": [
                     { "action": "sniff" }, { "protocol": "dns", "action": "hijack-dns" },
                     { "port": 53, "action": "hijack-dns" }, { "ip_cidr": ["10.25.36.2", "fdfe:dcba:9876::2"], "action": "hijack-dns" },
@@ -152,6 +175,8 @@
         const errorBlock = document.getElementById('errorBlock');
         const btn = document.getElementById('genBtn');
         
+        const isLegacyCore = document.querySelector('input[name="coreVersion"]:checked').value === 'old';
+        
         resultBlock.style.display = 'none';
         errorBlock.style.display = 'none';
 
@@ -164,10 +189,8 @@
             btn.disabled = true;
             let vlessUri = linkInput;
 
-            // Если вставили HTTP-ссылку (подписку)
             if (linkInput.startsWith("http")) {
                 btn.innerText = "Скачивание подписки...";
-                // Используем другой прокси-сервис
                 const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(linkInput)}`;
                 
                 let textData = "";
@@ -176,26 +199,26 @@
                     if (!response.ok) throw new Error();
                     textData = await response.text();
                 } catch (netErr) {
-                    throw new Error("Браузер заблокировал скачивание подписки (включен блокировщик рекламы или прокси недоступен). <br><br><b>Решение:</b> Откройте вашу ссылку подписки в браузере, скопируйте появившийся текст и вставьте его сюда вместо ссылки!");
+                    throw new Error("Браузер заблокировал скачивание подписки. <br><br><b>Решение:</b> Откройте вашу ссылку подписки в браузере, скопируйте появившийся текст и вставьте его сюда вместо ссылки!");
                 }
 
                 vlessUri = extractVlessFromText(textData);
             } 
-            // Если вставили не vless-ссылку и не http, пробуем расшифровать как сырой текст подписки
             else if (!linkInput.startsWith("vless://")) {
                 btn.innerText = "Расшифровка текста...";
                 vlessUri = extractVlessFromText(linkInput);
             }
 
-            // Стандартный процесс генерации
             btn.innerText = "Генерация конфига...";
             const vlessData = parseVless(vlessUri);
             const creds = generateCredentials();
-            const config = generateConfig(vlessData, creds.username, creds.password);
+            
+            const config = generateConfig(vlessData, creds.username, creds.password, isLegacyCore);
 
             const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(config, null, 2));
             const safeTag = vlessData.tag.replace(/[^a-zA-Z0-9\-_]/g, '');
-            const fileName = `singbox_${safeTag || 'config'}.json`;
+            const osSuffix = isLegacyCore ? "_ios" : "";
+            const fileName = `singbox_${safeTag || 'config'}${osSuffix}.json`;
 
             const dlAnchorElem = document.createElement('a');
             dlAnchorElem.setAttribute("href", dataStr);
@@ -215,13 +238,12 @@
         }
     }
 
-    // Вспомогательная функция для поиска vless внутри зашифрованного текста
     function extractVlessFromText(rawText) {
         let decodedData = "";
         try {
-            decodedData = atob(rawText.trim()); // Пробуем расшифровать Base64
+            decodedData = atob(rawText.trim()); 
         } catch (e) {
-            decodedData = rawText; // Если не Base64, берем как есть
+            decodedData = rawText; 
         }
 
         const lines = decodedData.split('\n');
