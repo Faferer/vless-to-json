@@ -105,21 +105,36 @@
     function generateConfig(v, username, password, isLegacyCore) {
         const dnsServers = isLegacyCore ? [
             { "tag": "dns-remote", "address": "tls://8.8.8.8", "detour": v.tag },
-            { "tag": "dns-direct", "address": "1.1.1.1" }
+            { "tag": "dns-direct", "address": "1.1.1.1", "detour": "direct" }
         ] : [
             { "tag": "dns-remote", "type": "tls", "server": "8.8.8.8", "detour": v.tag },
-            { "tag": "dns-direct", "type": "udp", "server": "1.1.1.1" }
+            { "tag": "dns-direct", "type": "udp", "server": "1.1.1.1", "detour": "direct" }
         ];
+
+        // Базовые правила маршрутизации по доменам (работают на всех ядрах)
+        const dnsRules = [
+            { "domain_suffix": [".ru", ".su", ".рф"], "server": "dns-direct" }
+        ];
+        
+        // Базовые правила маршрутизации для трафика
+        const routeRules = [
+            { "action": "sniff" }, { "protocol": "dns", "action": "hijack-dns" },
+            { "port": 53, "action": "hijack-dns" }, { "ip_cidr": ["10.25.36.2", "fdfe:dcba:9876::2"], "action": "hijack-dns" },
+            { "network": "icmp", "outbound": "direct" }, { "domain_suffix": [".ru", ".su", ".рф"], "outbound": "direct" }
+        ];
+
+        // Добавляем продвинутые rule-set только для новых ядер
+        if (!isLegacyCore) {
+            dnsRules.push({ "rule_set": ["geoip-ru"], "server": "dns-direct" });
+            routeRules.push({ "rule_set": ["geoip-ru"], "outbound": "direct" });
+        }
 
         const config = {
             "log": { "level": "warn" },
             "experimental": { "cache_file": { "enabled": false } },
             "dns": {
                 "servers": dnsServers,
-                "rules": [
-                    { "domain_suffix": [".ru", ".su", ".рф"], "server": "dns-direct" },
-                    { "rule_set": ["geoip-ru"], "server": "dns-direct" }
-                ],
+                "rules": dnsRules,
                 "final": "dns-remote",
                 "strategy": "ipv4_only"
             },
@@ -150,17 +165,12 @@
             ],
             "route": {
                 "default_domain_resolver": isLegacyCore ? undefined : "dns-direct",
-                "rules": [
-                    { "action": "sniff" }, { "protocol": "dns", "action": "hijack-dns" },
-                    { "port": 53, "action": "hijack-dns" }, { "ip_cidr": ["10.25.36.2", "fdfe:dcba:9876::2"], "action": "hijack-dns" },
-                    { "network": "icmp", "outbound": "direct" }, { "domain_suffix": [".ru", ".su", ".рф"], "outbound": "direct" },
-                    { "rule_set": ["geoip-ru"], "outbound": "direct" }
-                ],
-                "rule_set": [
+                "rules": routeRules,
+                "rule_set": isLegacyCore ? undefined : [
                     {
                         "type": "remote", "tag": "geoip-ru", "format": "binary",
                         "url": "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-ru.srs",
-                        "download_detour": "direct"
+                        "download_detour": v.tag 
                     }
                 ],
                 "final": v.tag, "auto_detect_interface": true
